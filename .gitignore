@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+Staff Survey 2026/
+data/
+.streamlit/secrets.toml
+
+# data.enc IS committed — it's the encrypted bundle, safe for a public repo.
