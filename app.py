@@ -20,5 +20,5 @@ hotspots = st.Page("pages/2_Hotspots.py", title="Hotspots", icon="🔥")
 compare = st.Page("pages/3_Compare.py", title="Compare", icon="⚖️")
 hotspot_map = st.Page("pages/4_Hotspot_Map.py", title="Hotspot Map", icon="🗺️")
 
-pg = st.navigation([overview, my_unit, hotspots, compare, hotspot_map])
+pg = st.navigation([overview, my_unit, hotspot_map, hotspots, compare])
 pg.run()
