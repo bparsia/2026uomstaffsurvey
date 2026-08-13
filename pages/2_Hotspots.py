@@ -1,5 +1,3 @@
-import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
 from utils import (
@@ -9,16 +7,14 @@ from utils import (
 
 require_password()
 
-BLUE = "#2a78d6"
-RED = "#e34948"
-
 st.title("Hotspots")
 st.caption(
     "Small units (low response counts) can swing on a handful of responses; "
-    "treat extreme values as indicative, not statistically robust."
+    "treat extreme values as indicative, not statistically robust. See the "
+    "Hotspot Map page for a treemap view of the same deltas."
 )
 
-tab_theme, tab_holistic, tab_treemap = st.tabs(["By theme", "Holistic ranking", "Treemap"])
+tab_theme, tab_holistic = st.tabs(["By theme", "Holistic ranking"])
 
 # ── By theme ──────────────────────────────────────────────────────────────
 with tab_theme:
@@ -164,90 +160,3 @@ with tab_holistic:
             }),
             hide_index=True, width='stretch',
         )
-
-# ── Treemap ───────────────────────────────────────────────────────────────
-with tab_treemap:
-    st.caption(
-        "Box area = response count (n). Box color = delta vs. Overall on the "
-        "selected theme (or the holistic mean delta across all 7 themes). "
-        "Parent boxes (faculty/subgroup) are colored by the response-weighted "
-        "average of their children. Grouped by faculty/Professional-Services "
-        "structure — see sources/org_hierarchy.csv (best-effort mapping from "
-        "unit names; some units are flagged doubtful there)."
-    )
-    theme_pick_tm = st.selectbox("Theme", ["Holistic (mean across all themes)"] + THEME_ORDER, key="treemap_theme")
-
-    hierarchy = load_org_hierarchy()
-
-    if theme_pick_tm == "Holistic (mean across all themes)":
-        h = holistic_ranking()
-        tm = h.rename(columns={"mean_delta_pp": "delta_pp"})[["org_unit", "n_responses", "delta_pp"]]
-    else:
-        scores = load_org_scores()
-        deltas = load_org_deltas()
-        s = scores[
-            (scores["granularity"] == "division_department") & (scores["row_type"] == "theme")
-            & (scores["theme"] == theme_pick_tm) & (scores["org_unit"] != "Overall")
-        ]
-        d = deltas[
-            (deltas["granularity"] == "division_department") & (deltas["row_type"] == "theme")
-            & (deltas["theme"] == theme_pick_tm) & (deltas["org_unit"] != "Overall")
-        ]
-        tm = s.merge(d[["org_unit", "delta_pp"]], on="org_unit", how="left")[["org_unit", "n_responses", "delta_pp"]]
-
-    tm = tm.merge(hierarchy[["unit", "group", "subgroup"]], left_on="org_unit", right_on="unit", how="left")
-    tm["group"] = tm["group"].fillna("Unclassified")
-    tm["subgroup"] = tm["subgroup"].fillna("Unclassified")
-    tm = tm.dropna(subset=["delta_pp"])  # below minimum-N units have no score/delta
-
-    max_abs = max(abs(tm["delta_pp"].min()), abs(tm["delta_pp"].max()), 1)
-
-    # Three levels: unit -> subgroup -> group (group has no parent, root level).
-    # A subgroup display name like "Faculty Office" or "Cross-faculty
-    # Research Institutes" can legitimately repeat across different groups
-    # (FBMH's Faculty Office is a different entity from FSE's) — Plotly
-    # treemaps identify nodes by `ids`, not `labels`, so subgroup/group ids
-    # are namespaced with their parent to stay unique even when the display
-    # label repeats.
-    tm["subgroup_id"] = tm["group"] + " / " + tm["subgroup"]
-    tm["_wsum"] = tm["delta_pp"] * tm["n_responses"]
-
-    def rollup(g):
-        n = g["n_responses"].sum()
-        return pd.Series({"n_responses": n, "delta_pp": g["_wsum"].sum() / n})
-
-    subgroups = (
-        tm.groupby(["subgroup_id", "subgroup", "group"])
-        .apply(rollup, include_groups=False).reset_index()
-    )
-    groups = tm.groupby("group").apply(rollup, include_groups=False).reset_index()
-
-    ids = list(tm["org_unit"]) + list(subgroups["subgroup_id"]) + list(groups["group"])
-    labels = list(tm["org_unit"]) + list(subgroups["subgroup"]) + list(groups["group"])
-    parents = list(tm["subgroup_id"]) + list(subgroups["group"]) + [""] * len(groups)
-    values = list(tm["n_responses"]) + list(subgroups["n_responses"]) + list(groups["n_responses"])
-    colors = list(tm["delta_pp"]) + list(subgroups["delta_pp"]) + list(groups["delta_pp"])
-    texts = (
-        [f"{u}<br>{n} responses<br>{delta:+.0f}pp" for u, n, delta in
-         zip(tm["org_unit"], tm["n_responses"], tm["delta_pp"])]
-        + [f"{lbl}<br>{n} responses<br>{delta:+.0f}pp (weighted avg)" for lbl, n, delta in
-           zip(subgroups["subgroup"], subgroups["n_responses"], subgroups["delta_pp"])]
-        + [f"{lbl}<br>{n} responses<br>{delta:+.0f}pp (weighted avg)" for lbl, n, delta in
-           zip(groups["group"], groups["n_responses"], groups["delta_pp"])]
-    )
-
-    fig = go.Figure(go.Treemap(
-        ids=ids, labels=labels, parents=parents, values=values,
-        branchvalues="total",
-        marker=dict(
-            colors=colors,
-            colorscale=[[0, RED], [0.5, "#f0efec"], [1, BLUE]],
-            cmid=0, cmin=-max_abs, cmax=max_abs,
-            colorbar=dict(title="Δ pp"),
-            showscale=True,
-        ),
-        text=texts,
-        hovertemplate="%{label}<br>%{value} responses<extra></extra>",
-    ))
-    fig.update_layout(height=650, margin=dict(t=10, b=10, l=10, r=10))
-    st.plotly_chart(fig, width='stretch')
