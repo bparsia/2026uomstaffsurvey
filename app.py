@@ -17,6 +17,7 @@ apply_branding(page_title="UoM Staff Survey 2026")
 overview = st.Page("pages/0_Overview.py", title="Overview", icon="📊", default=True)
 my_unit = st.Page("pages/1_My_Unit.py", title="My Unit", icon="🔍")
 hotspots = st.Page("pages/2_Hotspots.py", title="Hotspots", icon="🔥")
+compare = st.Page("pages/3_Compare.py", title="Compare", icon="⚖️")
 
-pg = st.navigation([overview, my_unit, hotspots])
+pg = st.navigation([overview, my_unit, hotspots, compare])
 pg.run()

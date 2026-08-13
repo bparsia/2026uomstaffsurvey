@@ -1,7 +1,7 @@
 import plotly.graph_objects as go
 import streamlit as st
 
-from utils import THEME_ORDER, org_units, unit_scorecard, fmt_pct, fmt_delta_pp, require_password
+from utils import THEME_ORDER, org_units, unit_scorecard, load_org_scores, fmt_pct, fmt_delta_pp, require_password
 
 require_password()
 
@@ -44,6 +44,31 @@ if unit:
         showlegend=False,
     )
     st.plotly_chart(fig, width='stretch')
+
+    st.subheader("Shape of strengths & weaknesses")
+    overall_scores = load_org_scores()
+    overall_theme = overall_scores[
+        (overall_scores["granularity"] == granularity) & (overall_scores["row_type"] == "theme")
+        & (overall_scores["org_unit"] == "Overall")
+    ].set_index("theme").loc[THEME_ORDER]["score"]
+
+    radar_theta = THEME_ORDER + [THEME_ORDER[0]]  # close the loop
+    fig_radar = go.Figure()
+    fig_radar.add_trace(go.Scatterpolar(
+        r=list(overall_theme) + [overall_theme.iloc[0]], theta=radar_theta,
+        name="University Overall", line=dict(color="#8a8a86", dash="dot"),
+        fill="none",
+    ))
+    fig_radar.add_trace(go.Scatterpolar(
+        r=list(theme_rows["score"]) + [theme_rows["score"].iloc[0]], theta=radar_theta,
+        name=unit, line=dict(color=BLUE), fill="toself", fillcolor="rgba(42,120,214,0.15)",
+    ))
+    fig_radar.update_layout(
+        polar=dict(radialaxis=dict(range=[0, 1], tickformat=".0%")),
+        height=420, margin=dict(t=30, b=10, l=40, r=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+    )
+    st.plotly_chart(fig_radar, width='stretch')
 
     st.subheader("Delta vs. Overall (percentage points)")
     colors = [RED if v < 0 else BLUE for v in theme_rows["delta_pp"].fillna(0)]
