@@ -5,8 +5,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from utils import (
-    THEME_ORDER, load_org_scores, load_org_deltas, load_org_hierarchy,
-    holistic_ranking, require_password,
+    THEME_ORDER, load_org_scores, load_org_hierarchy,
+    load_org_hierarchy_ps_faculty_offices, load_theme_comparisons,
+    faculty_office_comparison, require_password,
 )
 
 require_password()
@@ -46,32 +47,74 @@ def shorten(name: str, max_len: int = 24) -> str:
 
 st.title("Hotspot Map")
 st.caption(
-    "Box area = response count (n). Box color = delta vs. Overall on the "
-    "selected theme (or the holistic mean delta across all 7 themes). "
-    "Parent boxes (faculty/subgroup) are colored by the response-weighted "
-    "average of their children. Grouped by faculty/Professional-Services "
-    "structure — see sources/org_hierarchy.csv (best-effort mapping from "
-    "unit names; some units are flagged doubtful there)."
+    "Box area = response count (n). Box color = delta vs. the selected "
+    "baseline, on the selected theme (or the holistic mean delta across all "
+    "7 themes). Parent boxes (faculty/subgroup) are colored by the "
+    "response-weighted average of their children. Grouped by "
+    "faculty/Professional-Services structure — see sources/org_hierarchy.csv "
+    "(best-effort mapping from unit names; some units are flagged doubtful "
+    "there)."
 )
 theme_pick_tm = st.selectbox("Theme", ["Holistic (mean across all themes)"] + THEME_ORDER, key="treemap_theme")
 
-hierarchy = load_org_hierarchy()
+theme_comparisons = load_theme_comparisons()
+EXTERNAL_BENCHMARKS = [b for b in theme_comparisons["benchmark"].unique() if b != "Filtered Results"]
+baseline_pick = st.selectbox("Baseline", ["University Overall"] + EXTERNAL_BENCHMARKS, key="treemap_baseline")
+if baseline_pick != "University Overall":
+    st.caption(
+        f"'{baseline_pick}' is a single whole-university benchmark figure "
+        "(not broken out by department) — every unit's delta below is its "
+        "own score minus that one external number, not a per-unit external "
+        "comparison."
+    )
+    bench_check = theme_comparisons[theme_comparisons["benchmark"] == baseline_pick].set_index("theme")["score"]
+    missing_themes = [t for t in THEME_ORDER if pd.isna(bench_check.get(t))]
+    if missing_themes:
+        st.caption(
+            f"⚠️ '{baseline_pick}' has no figure for {', '.join(missing_themes)} — "
+            "those theme(s) are excluded from every unit's delta (and from "
+            "the holistic mean) when this baseline is selected."
+        )
+
+fac_office_to_ps = st.toggle(
+    "Group Faculty Offices under Professional Services",
+    value=False,
+    help="Faculty Office staff are professional-services roles administratively "
+         "embedded in a faculty. Off (default): each faculty's own Faculty "
+         "Office units stay nested inside that faculty. On: all Faculty "
+         "Office units move into one combined subgroup under Professional "
+         "Services instead.",
+)
+
+hierarchy = load_org_hierarchy_ps_faculty_offices() if fac_office_to_ps else load_org_hierarchy()
+
+scores = load_org_scores()
+unit_scores = scores[
+    (scores["granularity"] == "division_department") & (scores["row_type"] == "theme")
+    & (scores["org_unit"] != "Overall")
+].copy()
+
+if theme_pick_tm != "Holistic (mean across all themes)":
+    unit_scores = unit_scores[unit_scores["theme"] == theme_pick_tm]
+
+if baseline_pick == "University Overall":
+    overall = scores[
+        (scores["granularity"] == "division_department") & (scores["row_type"] == "theme")
+        & (scores["org_unit"] == "Overall")
+    ].set_index("theme")["score"]
+else:
+    bench = theme_comparisons[theme_comparisons["benchmark"] == baseline_pick].set_index("theme")["score"]
+    overall = bench
+
+unit_scores["baseline_score"] = unit_scores["theme"].map(overall)
+unit_scores["delta_pp"] = (unit_scores["score"] - unit_scores["baseline_score"]) * 100
 
 if theme_pick_tm == "Holistic (mean across all themes)":
-    h = holistic_ranking()
-    tm = h.rename(columns={"mean_delta_pp": "delta_pp"})[["org_unit", "n_responses", "delta_pp"]]
+    tm = unit_scores.dropna(subset=["delta_pp"]).groupby("org_unit", as_index=False).agg(
+        n_responses=("n_responses", "first"), delta_pp=("delta_pp", "mean"),
+    )
 else:
-    scores = load_org_scores()
-    deltas = load_org_deltas()
-    s = scores[
-        (scores["granularity"] == "division_department") & (scores["row_type"] == "theme")
-        & (scores["theme"] == theme_pick_tm) & (scores["org_unit"] != "Overall")
-    ]
-    d = deltas[
-        (deltas["granularity"] == "division_department") & (deltas["row_type"] == "theme")
-        & (deltas["theme"] == theme_pick_tm) & (deltas["org_unit"] != "Overall")
-    ]
-    tm = s.merge(d[["org_unit", "delta_pp"]], on="org_unit", how="left")[["org_unit", "n_responses", "delta_pp"]]
+    tm = unit_scores[["org_unit", "n_responses", "delta_pp"]]
 
 tm = tm.merge(hierarchy[["unit", "group", "subgroup"]], left_on="org_unit", right_on="unit", how="left")
 tm["group"] = tm["group"].fillna("Unclassified")
@@ -138,3 +181,27 @@ fig = go.Figure(go.Treemap(
 ))
 fig.update_layout(margin=dict(t=10, b=10, l=10, r=10))
 st.plotly_chart(fig, width='stretch', height=650)
+
+st.divider()
+st.subheader("Faculty Office effect on faculty standing")
+st.caption(
+    "Holistic mean delta vs. Overall (percentage points), computed with vs. "
+    "without each faculty's own Faculty Office units — shows how much the "
+    "Faculty Office is pulling its faculty's overall standing up or down "
+    "relative to its academic departments. Independent of the toggle above."
+)
+comparison = faculty_office_comparison()
+st.dataframe(
+    comparison.rename(columns={
+        "faculty": "Faculty",
+        "mean_delta_incl_fac_office": "Mean Δ incl. Faculty Office (pp)",
+        "mean_delta_excl_fac_office": "Mean Δ excl. Faculty Office (pp)",
+        "difference": "Difference (pp)",
+    }),
+    column_config={
+        "Mean Δ incl. Faculty Office (pp)": st.column_config.NumberColumn(format="%+.1f"),
+        "Mean Δ excl. Faculty Office (pp)": st.column_config.NumberColumn(format="%+.1f"),
+        "Difference (pp)": st.column_config.NumberColumn(format="%+.1f"),
+    },
+    hide_index=True, width='stretch',
+)

@@ -165,6 +165,115 @@ def load_org_hierarchy() -> pd.DataFrame:
     return df
 
 
+def load_org_hierarchy_ps_faculty_offices() -> pd.DataFrame:
+    """load_org_hierarchy(), but with every "Faculty Office" subgroup moved
+    under Professional Services as one combined "Faculty Offices" subgroup,
+    instead of nested inside its own academic faculty (FBMH/FSE/Humanities).
+
+    Faculty Office staff are professional-services roles administratively
+    embedded in a faculty — reasonable people disagree on which side of the
+    academic/PS line they belong, so this is an alternate view, not a
+    correction of load_org_hierarchy().
+    """
+    df = load_org_hierarchy().copy()
+    is_faculty_office = df["subgroup"] == "Faculty Office"
+    df.loc[is_faculty_office, "group"] = "Professional Services"
+    df.loc[is_faculty_office, "subgroup"] = "Faculty Offices"
+    return df
+
+
+def unit_hierarchy_context(unit: str) -> dict | None:
+    """Group/subgroup for a division_department unit, or None if unmapped."""
+    hierarchy = load_org_hierarchy()
+    row = hierarchy[hierarchy["unit"] == unit]
+    if row.empty:
+        return None
+    r = row.iloc[0]
+    return {"group": r["group"], "subgroup": r["subgroup"], "doubtful": r.get("doubtful")}
+
+
+def hierarchy_level_theme_scores(
+    level: str, value: str, exclude_unit: str | None = None, hierarchy: pd.DataFrame | None = None,
+) -> pd.Series:
+    """Response-weighted average theme scores across every unit under a hierarchy node.
+
+    `level` is "subgroup" or "group" (sources/org_hierarchy.csv's columns).
+    Set exclude_unit to leave one unit's own responses out of the average —
+    e.g. comparing a department against "the rest of its school" rather than
+    a school-wide figure the department itself partly contributes to.
+    Pass `hierarchy` to use an alternate grouping (e.g.
+    load_org_hierarchy_ps_faculty_offices()) instead of the default.
+    Units below the minimum-N reporting threshold (no score) are dropped
+    from the weighted average but don't block it.
+    """
+    hierarchy = load_org_hierarchy() if hierarchy is None else hierarchy
+    member_units = hierarchy.loc[hierarchy[level] == value, "unit"]
+    if exclude_unit is not None:
+        member_units = member_units[member_units != exclude_unit]
+
+    scores = load_org_scores()
+    s = scores[
+        (scores["granularity"] == "division_department") & (scores["row_type"] == "theme")
+        & (scores["org_unit"].isin(member_units))
+    ].dropna(subset=["score"])
+
+    if s.empty:
+        return pd.Series({t: float("nan") for t in THEME_ORDER})
+
+    s = s.copy()
+    s["_wsum"] = s["score"] * s["n_responses"]
+    grouped = s.groupby("theme").apply(
+        lambda g: g["_wsum"].sum() / g["n_responses"].sum(), include_groups=False
+    )
+    return grouped.reindex(THEME_ORDER)
+
+
+def faculty_office_comparison() -> pd.DataFrame:
+    """Per-faculty holistic mean delta vs. Overall, with vs. without Faculty Office units.
+
+    One row per academic faculty (FBMH, FSE, Humanities — Professional
+    Services has no "Faculty Office" subgroup of its own, so it's excluded).
+    "Including" uses every unit under that faculty group; "excluding" drops
+    just the units in its "Faculty Office" subgroup. The difference shows
+    how much the Faculty Office's own scores are pulling the faculty's
+    overall standing up or down relative to its academic departments.
+    """
+    hierarchy = load_org_hierarchy()
+    deltas = load_org_deltas()
+    d = deltas[
+        (deltas["granularity"] == "division_department") & (deltas["row_type"] == "theme")
+        & (deltas["org_unit"] != "Overall")
+    ].dropna(subset=["delta_pp"])
+
+    def weighted_mean_delta(member_units) -> float:
+        sub = d[d["org_unit"].isin(member_units)]
+        if sub.empty:
+            return float("nan")
+        sub = sub.copy()
+        sub["_wsum"] = sub["delta_pp"] * sub["n_responses"]
+        per_theme = sub.groupby("theme").apply(
+            lambda g: g["_wsum"].sum() / g["n_responses"].sum(), include_groups=False
+        )
+        return per_theme.mean()
+
+    faculties = sorted(hierarchy.loc[hierarchy["subgroup"] == "Faculty Office", "group"].unique())
+    rows = []
+    for faculty in faculties:
+        incl_units = hierarchy.loc[hierarchy["group"] == faculty, "unit"]
+        excl_units = hierarchy.loc[
+            (hierarchy["group"] == faculty) & (hierarchy["subgroup"] != "Faculty Office"), "unit",
+        ]
+        incl = weighted_mean_delta(incl_units)
+        excl = weighted_mean_delta(excl_units)
+        rows.append({
+            "faculty": faculty,
+            "mean_delta_incl_fac_office": incl,
+            "mean_delta_excl_fac_office": excl,
+            "difference": excl - incl if incl == incl and excl == excl else float("nan"),
+        })
+    return pd.DataFrame(rows)
+
+
 def unit_theme_deltas(granularity: str = "division_department") -> pd.DataFrame:
     """Wide table: one row per org unit, one column per theme's delta_pp vs Overall."""
     deltas = load_org_deltas()
